@@ -345,6 +345,12 @@ WORKFLOW_RUN_SCHEMA = ToolSchema(
         FieldSpec("name", str, max_len=MAX_SHORT_STRING),
         FieldSpec("args", dict),
         FieldSpec("budget_total", int, min_val=0, max_val=100_000_000),
+        # Opt-in titling/filing for the fallback ``workflow-<run_id>`` slot a run
+        # gets when its originating session is gone (e.g. a webhook turn). With
+        # neither given the fallback keeps its default ``Workflow: <name>`` title,
+        # unfiled. A live originating session is never touched.
+        FieldSpec("title", str, max_len=200),
+        FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
