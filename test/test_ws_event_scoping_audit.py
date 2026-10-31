@@ -688,9 +688,8 @@ class TestDashboardUserGrantsAreAudited:
         grant that admits the owner to it was gated out of the record.
         """
         from kiro_crew.dashboard import ws as dashboard_ws
-        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
-
         from kiro_crew.dashboard import ws_event_scope as _wes
+        from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
 
         state = self._dashboard_state()
         monkeypatch.setattr(_wes, "_sel_last_audit", {})
