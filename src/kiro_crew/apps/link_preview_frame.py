@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
 from kiro_crew.sel import sel
 
@@ -113,6 +114,10 @@ def _provider_entry(name: str) -> tuple[str, bool, str] | None:
     if not entry or ".." in entry or entry.startswith("/"):
         return None
     if manifest.name != name:
+        return None
+    # Revoked or never approved: no host and no text pattern the owner approved.
+    grant = link_preview_grant_row(name, manifest).get("linkPreviewGrant") or {}
+    if not grant.get("hosts") and not grant.get("textPatterns"):
         return None
     return entry, bool(manifest.backend.entryPoint), manifest.name
 
@@ -213,17 +218,24 @@ async function capFetch(path, init) {
   return go();
 }
 const clampNum = (n) => (Number.isFinite(n) ? n : 0);
+// Card controls belong to one show: each carries that show's invocation, fixed
+// when it is made, so a slow completion for an earlier hover names the earlier
+// show and the dashboard drops it.
+function cardControls(invocation) {
+  return Object.freeze({
+    open: () => send('open', { invocation }),
+    close: () => send('close', { invocation }),
+    resize: (size) => send('resize', { invocation, width: clampNum(size && size.width), height: clampNum(size && size.height) }),
+    pin: (pinned) => send('pin', { invocation, pinned: pinned === true }),
+    dragBy: (dx, dy) => send('drag', { invocation, dx: clampNum(dx), dy: clampNum(dy) }),
+    dock: (edge) => send('dock', { invocation, edge: edge === 'left' || edge === 'right' ? edge : null }),
+  });
+}
 const ctx = {
   appName: CFG.app,
   theme: () => CFG.theme,
   fetch: capFetch,
   setTextPatternsOff: (ids) => send('textPatternsOff', { ids: Array.isArray(ids) ? ids.map(String).slice(0, 64) : [] }),
-  open: () => send('open'),
-  close: () => send('close'),
-  resize: (size) => send('resize', { width: clampNum(size && size.width), height: clampNum(size && size.height) }),
-  pin: (pinned) => send('pin', { pinned: pinned === true }),
-  dragBy: (dx, dy) => send('drag', { dx: clampNum(dx), dy: clampNum(dy) }),
-  dock: (edge) => send('dock', { edge: edge === 'left' || edge === 'right' ? edge : null }),
   // Overlay mode: the frame covers the viewport, clipped to these rects.
   setRegions: (rects) => send('regions', {
     rects: (Array.isArray(rects) ? rects : []).slice(0, 32).map((r) => ({
@@ -266,7 +278,8 @@ window.addEventListener('message', (e) => {
       renewWaiters.splice(0).forEach((done) => done());
       return;
     case 'show': {
-      const link = { rect: m.rect, theme: m.theme === 'dark' ? 'dark' : 'light' };
+      if (!Number.isInteger(m.invocation)) return;
+      const link = { rect: m.rect, theme: m.theme === 'dark' ? 'dark' : 'light', card: cardControls(m.invocation) };
       if (typeof m.url === 'string') link.url = m.url;
       if (typeof m.text === 'string') link.text = m.text;
       if (m.modifiers && typeof m.modifiers === 'object') {
@@ -358,7 +371,8 @@ def frame_csp(nonce: str, frame_ancestors: str) -> str:
         "img-src 'self' https: data: blob:; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
-        "object-src 'none'; base-uri 'none'; form-action 'none'; "
+        "media-src 'none'; worker-src 'none'; frame-src 'none'; child-src 'none'; "
+        "manifest-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; "
         f"frame-ancestors {frame_ancestors}"
     )
 
@@ -400,7 +414,8 @@ async def handle_link_preview_frame(request: web.Request) -> web.Response:
 
 #: Request headers the frame may send. ``content-type`` covers JSON bodies.
 _CORS_ALLOW_HEADERS = f"content-type, {CAPABILITY_HEADER.lower()}"
-_CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE"
+_FETCH_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_CORS_ALLOW_METHODS = ", ".join(sorted(_FETCH_METHODS))
 #: Marks a request whose response carries the frame's CORS headers: a preflight,
 #: or a request whose capability verified. A refusal carries none.
 _CORS_KEY = "link_preview_cors"
@@ -455,6 +470,10 @@ async def handle_link_preview_fetch(request: web.Request) -> web.StreamResponse:
         request[_CORS_KEY] = True
         # A preflight carries no credential by design; it grants nothing by itself.
         return web.Response(status=204)
+    if request.method not in _FETCH_METHODS:
+        return web.json_response(
+            {"code": "method_not_allowed", "error": "method not allowed"}, status=405
+        )
     if ".." in path or path.startswith("/") or "\\" in path:
         return web.json_response({"code": "invalid_path", "error": "invalid path"}, status=400)
     capability = request.headers.get(CAPABILITY_HEADER, "")
